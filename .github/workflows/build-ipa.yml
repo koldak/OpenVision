@@ -1,0 +1,108 @@
+name: Build IPA
+
+# Builds an unsigned OpenVision.ipa for sideloading (iloader / Sideloadly / AltStore re-sign it
+# with your own Apple ID). Run it by hand from the Actions tab ("Run workflow").
+#
+# Optional repository secrets (Settings > Secrets and variables > Actions). Anything left unset
+# falls back to the placeholder from Config.xcconfig.example, which still compiles but cannot
+# register the glasses:
+#   META_APP_ID      Meta Developer Console app ID
+#   CLIENT_TOKEN     full "AR|<app id>|<token>" client token
+#   BUNDLE_ID        must match the bundle ID registered in the Meta console
+#   APPLE_TEAM_ID    team ID your sideloading tool signs with (iloader shows it)
+#   URL_SCHEME       callback scheme for the Meta AI app (default: openvision)
+
+on:
+  workflow_dispatch:
+
+env:
+  # Same pin as ci.yml so the SDK matches the one the pinned mlx-swift-lm compiles against.
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  ipa:
+    name: Build unsigned IPA
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Write Config.xcconfig and Config.swift
+        env:
+          META_APP_ID: ${{ secrets.META_APP_ID }}
+          CLIENT_TOKEN: ${{ secrets.CLIENT_TOKEN }}
+          BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          URL_SCHEME: ${{ secrets.URL_SCHEME }}
+        run: |
+          APP_ID="${META_APP_ID:-YOUR_META_APP_ID}"
+          {
+            echo "DEVELOPMENT_TEAM = ${APPLE_TEAM_ID}"
+            echo "PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID:-com.yourcompany.openvision}"
+            echo "META_APP_ID = ${APP_ID}"
+            echo "CLIENT_TOKEN = ${CLIENT_TOKEN:-AR|${APP_ID}|YOUR_CLIENT_TOKEN}"
+            echo "APP_LINK_URL_SCHEME = ${URL_SCHEME:-openvision}"
+          } > Config.xcconfig
+          cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
+          # Print the keys only, never the values.
+          cut -d= -f1 Config.xcconfig
+
+      - name: Cache Swift packages
+        uses: actions/cache@v6
+        with:
+          path: .spm
+          key: spm-${{ runner.os }}-${{ hashFiles('OpenVision.xcodeproj/project.pbxproj', 'project.yml') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Make sure the Metal compiler is present
+        # The on-device MLX runtime compiles Metal shaders; recent Xcode images can ship without it.
+        run: xcrun -sdk iphoneos metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Build (Release, generic iOS device, unsigned)
+        # -skip* flags: mlx-swift ships a build plugin and mlx-swift-lm uses Swift macros, which
+        # Xcode refuses to run headless until approved.
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OpenVision.xcodeproj \
+            -scheme OpenVision \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -clonedSourcePackagesDirPath .spm \
+            -derivedDataPath DerivedData \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+          | xcbeautify --renderer github-actions
+
+      - name: Package OpenVision.ipa
+        run: |
+          APP="DerivedData/Build/Products/Release-iphoneos/OpenVision.app"
+          test -d "$APP"
+          rm -rf Payload OpenVision.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry OpenVision.ipa Payload
+          ls -lh OpenVision.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenVision-ipa
+          path: OpenVision.ipa
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-logs
+          path: DerivedData/Logs/Build/*.xcactivitylog
+          if-no-files-found: ignore
