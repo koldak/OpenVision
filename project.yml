@@ -114,7 +114,11 @@ packages:
     # camera-consolidation API: DeviceSession.addCamera(config:) -> Camera -> camera.stream
     # (StreamSession/addStream are gone). Requires iOS 17.2+.
     # MUST be regression-tested on Gen 1/2 glasses (register + stream + HFP mic) before merge.
-    exactVersion: "0.9.0"
+    #
+    # 0.9.0 -> 1.0.1: the Meta AI app (v294) reports DAT SDK 1.0.0, and a 0.9.0 build listed
+    # 0 connected devices on Ray-Ban Meta Gen 1 (suspected version mismatch). 1.0.x only renames
+    # StreamError cases and drops Wearables.deviceStateStream(for:), neither used by this app.
+    exactVersion: "1.0.1"
   # PrismML fork of mlx-swift, adding 1-bit quantized Metal kernels (upstream PR pending).
   # Needed to load Bonsai-8B (Qwen3-8B at 1-bit g128, 1.28 GB vs E2B's 3.6 GB). Declared at the
   # ROOT so every consumer (mlx-swift-lm + the three vendored packages) resolves the same identity.
